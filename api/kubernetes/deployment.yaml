@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $CI_ENVIRONMENT_SLUG
+  namespace: $KUBE_NAMESPACE
+  annotations:
+    app.gitlab.com/env: $ORIGINAL_CI_ENVIRONMENT_SLUG
+    app.gitlab.com/app: $CI_PROJECT_PATH_SLUG
+  labels:
+    app: $CI_ENVIRONMENT_SLUG
+    pipeline_id: "$CI_PIPELINE_ID"
+    build_id: "$CI_BUILD_ID"
+spec:
+  replicas: $REPLICAS
+  selector:
+    matchLabels:
+      app: $CI_ENVIRONMENT_SLUG
+  template:
+    metadata:
+      annotations:
+        app.gitlab.com/env: $ORIGINAL_CI_ENVIRONMENT_SLUG
+        app.gitlab.com/app: $CI_PROJECT_PATH_SLUG
+      labels:
+        name: ${CI_ENVIRONMENT_SLUG}
+        app: $CI_ENVIRONMENT_SLUG
+    spec:
+      containers:
+      - name: django
+        image: ${CI_REGISTRY_IMAGE}-api:$CI_REGISTRY_TAG
+        command: ["/app/kubernetes/run.sh"]
+        env:
+          - name: PORT
+            value: '8080'
+          - name: WS_PORT
+            value: '8001'
+          - name: DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: argus-db
+                key: database_url
+          - name: DEFAULT_FROM_EMAIL
+            value: "argus@$ARGUS_COOKIE_DOMAIN"
+          - name: SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: django-secret-key
+                key: secret_key
+          - name: STATIC_ROOT
+            value: "static/"
+          - name: TIME_ZONE
+            value: "Europe/Oslo"
+          - name: ARGUS_COOKIE_DOMAIN
+            value: $ARGUS_COOKIE_DOMAIN
+          - name: ARGUS_FRONTEND_URL
+            value: $ARGUS_FRONTEND_URL
+          - name: ARGUS_SEND_NOTIFICATIONS
+            value: "1"
+        ports:
+            - containerPort: 8080
+              protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /admin/login/
+            port: $HTTP_PORT
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          successThreshold: 1
+          failureThreshold: 3
+          timeoutSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /admin/login/
+            port: $HTTP_PORT
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          successThreshold: 1
+          failureThreshold: 3
+          timeoutSeconds: 15
+        lifecycle:
+          preStop:  # Give ingress container time to stop sending requests to this container during shutdown.
+            exec:
+              command: ['/bin/sleep', '15']
+
+      - name: redis
+        image: redis:latest
+        ports:
+          - containerPort: 6379
+            name: redis
+
+      - name: nginx
+        image: ${CI_REGISTRY_IMAGE}-nginx:${CI_REGISTRY_TAG}
+        ports:
+        - containerPort: 80
+          name: web
+
+      - name: websockets
+        image: ${CI_REGISTRY_IMAGE}-api:$CI_REGISTRY_TAG
+        command: ["/app/kubernetes/run_ws.sh"]
+        env:
+          - name: PORT
+            value: '8080'
+          - name: WS_PORT
+            value: '8001'
+          - name: DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: argus-db
+                key: database_url
+          - name: DEFAULT_FROM_EMAIL
+            value: "argus@$ARGUS_COOKIE_DOMAIN"
+          - name: SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: django-secret-key
+                key: secret_key
+          - name: STATIC_ROOT
+            value: "static/"
+          - name: ARGUS_COOKIE_DOMAIN
+            value: $ARGUS_COOKIE_DOMAIN
+          - name: ARGUS_FRONTEND_URL
+            value: "https://$ARGUS_COOKIE_DOMAIN"
+          - name: ARGUS_SEND_NOTIFICATIONS
+            value: "1"
+        ports:
+            - containerPort: 8001
+              protocol: TCP
+        lifecycle:
+          preStop:  # Give ingress container time to stop sending requests to this container during shutdown.
+            exec:
+              command: ['/bin/sleep', '15']
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  name: $CI_ENVIRONMENT_SLUG
